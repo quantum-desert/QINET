@@ -23,15 +23,8 @@ import regex as re
 from scipy import stats, signal
 from scipy.interpolate import CubicSpline, make_interp_spline
 from scipy.optimize import curve_fit
+from scipy.signal import find_peaks
 # from scipy.integrate import integrate
-
-
-# ============================== CONFIG ==============================
-FOLDER = r"../data/calibration data/ESA_8-21/LIGHT" # OTHER | BASELINE | LIGHT     # folder containing the ESA .txt trace files
-PATTERN = "*.txt"             # glob pattern for input files
-LOGX = False                   # log-scale frequency axis?
-OUT = None                    # e.g. "overlay.png" to save; None to just display
-# ======================================================================
 
 
 def load_esa_file(filepath):
@@ -56,12 +49,13 @@ def load_exp_file(filepath):
     valid = ~np.isnan(t) & ~np.isnan(A)
     return t[valid], A[valid]
 
-def unpack_trace(fp):
+def unpack_trace(fp,convert=True):
     label = os.path.splitext(os.path.basename(fp))[0]
     freq, psd = load_esa_file(fp)
 
     # convert to linear PSD
-    psd = np.power(10,np.divide(psd,10)) # V^2 / Hz linear basis
+    if(convert):
+        psd = np.power(10,np.divide(psd,10)) # V^2 / Hz linear basis
 
     return (label,freq,psd)
 
@@ -71,89 +65,72 @@ def quadratic_model(x, a, b, c):
 
 
 
-
-
 def main():
     # filepaths = sorted(glob.glob(os.path.join(FOLDER, PATTERN)), key=lambda f: float(m.group(1)) if (m := re.search(r'([\d.]+)\s*nw', f, re.I)) else float('inf'))
 
-    # rootp = r"/Users/agentatom/Library/CloudStorage/OneDrive-Umich/GraduateSchool/UM/QE_LAB/QINET/data/calibration data/ESA_8-21/"
-    rootp = r"/Users/agentatom/Library/CloudStorage/OneDrive-Umich/GraduateSchool/UM/QE_LAB/QINET/data/calibration data/ESA_8-26/"
-    rootptoday = r"/Users/agentatom/Library/CloudStorage/OneDrive-Umich/GraduateSchool/UM/QE_LAB/QINET/data/calibration data/ESA_8-28/"
+    rootp = r"/Users/agentatom/Library/CloudStorage/OneDrive-Umich/GraduateSchool/UM/QE_LAB/QINET/data/calibration data/ESA_8-27/"
 
 
 
     # named traces
-    # esa_term_trace = rootp+r"BASELINE/PSD_SRS760_term_0.txt"
-    dark_trace = rootp+r"BASELINE/PSD_SRS760_TIA_PD_RB_0nw_0.txt"
-
-    # scaling optical powers
-    # p42_trace = rootp+r"LIGHT/PSD_SRS760_TIA_PD_RB_42nw_0.txt"
-    # p85_trace = rootp+r"LIGHT/PSD_SRS760_TIA_PD_RB_85nw_0.txt"
-    # p190_trace = rootp+r"LIGHT/PSD_SRS760_TIA_PD_RB_190nw_0.txt"
-    # p280_trace = rootp+r"LIGHT/PSD_SRS760_TIA_PD_RB_280nw_0.txt"
-    # p_exp_trace = rootp+r"exp/S1_scope_922_2.csv"
-
-    p54_trace = rootptoday+r"PSD_SRS760_54nw_0.txt"
-    p301_trace = rootp+r"LIGHT/PSD_SRS760_301nw_0.txt"
-    p335_trace = rootp+r"LIGHT/PSD_SRS760_335nw_0.txt"
-    p417_trace = rootp+r"LIGHT/PSD_SRS760_417nw_0.txt"
-    p471_trace = rootp+r"LIGHT/PSD_SRS760_471nw_0.txt"
-    p520_trace = rootp+r"LIGHT/PSD_SRS760_520nw_0.txt"
-    p572_trace = rootp+r"LIGHT/PSD_SRS760_572nw_0.txt"
-    p606_trace = rootp+r"LIGHT/PSD_SRS760_606nw_0.txt"
-    p676_trace = rootp+r"LIGHT/PSD_SRS760_676nw_0.txt"
-    p_exp_trace = rootp+r"exp/S1_scope_922_2.csv"
+    unbalanced_pd1 = rootp+r"PSD_SRS760_CMMR_mod_unbal_vrms_pd1_0.txt"
+    unbalanced_pd2 = rootp+r"PSD_SRS760_CMMR_mod_unbal_vrms_pd2_0.txt"
+    balanced = rootp+r"PSD_SRS760_CMMR_mod_bal_vrms_0.txt"
+    
+    traces = [unbalanced_pd1,unbalanced_pd2,balanced]
 
 
-
-
-
-    traces = [p54_trace,p301_trace, p335_trace, p417_trace, p471_trace, p520_trace, p572_trace, p606_trace, p676_trace]
-
+    f_mod=50e3 # for intensity mod CMMR characterization
 
     colors = plt.cm.viridis(np.linspace(0, 1, len(traces)))
 
     # create figure
     fig, ax = plt.subplots(figsize=(9, 6))
-    ax.set_prop_cycle(color=colors)
+    # ax.set_prop_cycle(color=colors)
 
     # unpack traces + do math in V^2/Hz linear units, plot in dB
 
-    powers = []
+    sampled = {}
     for trace in traces:
-        label,freq,psd = unpack_trace(trace)
-        powers.append(int(label.split("_")[2].strip("nw")))
-        # ax.plot(freq, np.multiply(10,np.log10(psd)), label=label, linewidth=1.2)
+        label,freq,spectrum = unpack_trace(trace,convert=False)
+        spectrum_dbv = 20*np.log10(np.sqrt(2)*spectrum)
+        ax.plot(freq, spectrum_dbv, label=label, linewidth=1.2)
+
+        pk_idx = np.argmin(abs(freq-f_mod))+1
+
+        # sample
+        sampled[label] = spectrum[pk_idx]
+
+    ax.axvline(freq[pk_idx],label="Modulation Frequency",linestyle="--",color="r")
+
+
+    avg_unbal = 1/2*(sampled["PSD_SRS760_CMMR_mod_unbal_vrms_pd1_0"] + sampled["PSD_SRS760_CMMR_mod_unbal_vrms_pd2_0"])
+    bal = sampled["PSD_SRS760_CMMR_mod_bal_vrms_0"]
+
+    CMMR = 20*np.log10(avg_unbal/(2*bal))
+
+    x_text = 52e3
+    y_text = -40
+    ax.annotate(
+        text=f"CMMR = {CMMR:.2f} dB", 
+        xy=(x_text, y_text),          
+        xytext=(x_text - 1, y_text + 2),      
+    )
+    ax.set_xlim([f_mod-15e3,f_mod+15e3]) # cutoff DC
+    ax.set_xlabel("Frequency [Hz]")
+    ax.set_ylabel("dBV")
+    ax.set_title("Intensity Modulation CMMR Characterization")
+    ax.legend()
+    plt.show()
+    return
 
     # # ESA noise floor
     # label,freq,psd = unpack_trace(esa_term_trace)
     # # ax.plot(freq, np.multiply(10,np.log10(psd)), label=label, linewidth=1.2)
 
-    colors = plt.cm.viridis(np.linspace(0, 1, 5))
-    ax.set_prop_cycle(color=colors)
-
     # # dark trace
     label,freq,psd_dark = unpack_trace(dark_trace)
-    label = "PSD SR760, Dark Trace"
-    ax.plot(freq, np.multiply(10,np.log10(psd_dark)), label=label, linewidth=1.2)
-
-    # # lower noise exp trace
-    label,freq,psd_nbprime = unpack_trace(p54_trace)
-    ax.plot(freq, np.multiply(10,np.log10(psd_nbprime)), label=label, linewidth=1.2)
-
-    # # calib trace matching exp
-    label,freq,psd_417 = unpack_trace(p417_trace)
-    ax.plot(freq, np.multiply(10,np.log10(psd_417)), label=label, linewidth=1.2)
-
-    # mod frequency call out + downsample
-    fmod = 8e3
-    ax.axvline(fmod,linestyle='--',color='g',label='f_mod')
-    mod_index = np.abs(freq-fmod).argmin()
-
-    # shot noise only
-    SN_only = -102.67 # dbvrms/sqrt(Hz)
-    ax.axhline(SN_only,linestyle='--',color='m',label='S_shot(f,54nW)')
-
+    # ax.plot(freq, np.multiply(10,np.log10(psd_dark)), label=label, linewidth=1.2)
 
     # # optical power sweep trace(s)
     # label,freq,psd_42 = unpack_trace(p42_trace)
@@ -218,18 +195,7 @@ def main():
     valid_Pxx_smooth = np.isfinite(Pxx_smooth)
 
     ax.plot(f_welch, np.multiply(10,np.log10(Pxx_welch)), label=label_welch, linewidth=1.2)
-    # ax.plot(f_welch[valid_Pxx_smooth], np.multiply(10,np.log10(Pxx_smooth))[valid_Pxx_smooth], label=label_welch+str("_smooth"), linewidth=1.2,color='r')
-
-
-    # mod index sample for shot-noise clearance
-    dark_ds_PSD = psd_dark[mod_index]
-    exp_ds_PSD = psd_417[mod_index]
-    exp_nbprime_PSD = psd_nbprime[mod_index]
-    SN_clearance_exp = 10*np.log10(exp_ds_PSD/dark_ds_PSD)
-    SN_clearance_nbprime = 10*np.log10(exp_nbprime_PSD/dark_ds_PSD)
-
-    print(f"Previous Exp. Shot Noise Clearance (dB): {SN_clearance_exp:.2f}")
-    print(f"NB' Shot Noise Clearance (dB): {SN_clearance_nbprime:.2f}")
+    ax.plot(f_welch[valid_Pxx_smooth], np.multiply(10,np.log10(Pxx_smooth))[valid_Pxx_smooth], label=label_welch+str("_smooth"), linewidth=1.2,color='r')
 
     # styling for power traces
     # ax.set_ylim([-92, -120])
@@ -238,8 +204,7 @@ def main():
     TITLE = "ESA Noise Floor; Experimental Overlay; w/ Filter Detrend"
     ax.set_xlim([500,50e3]) # cut off flicker noise
     # ax.set_ylim([-110,-80]) # no filter detrend
-    # ax.set_ylim([-97,-85]) # w/ filter detrend
-    ax.set_ylim([-120,-85])
+    ax.set_ylim([-97,-85]) # w/ filter detrend
 
     ax.set_xlabel("Frequency [Hz]")
     ax.set_ylabel(r"PSD [dBVrms/$\sqrt{Hz}$]")
@@ -247,14 +212,10 @@ def main():
     ax.grid(True, which="both", alpha=0.3)
     ax.legend(loc="best", fontsize=8, frameon=True)
     fig.tight_layout()
+    plt.colorbar()
 
-    # plt.show()
-    # return
-
-    #      ##      ##      ##      ##      ##      ##      ##      #
-    #      ##      ##      ##      ##      ##      ##      ##      #
-    #      ##      ##      ##      ##      ##      ##      ##      #
-    #      ##      ##      ##      ##      ##      ##      ##      #
+    plt.show()
+    return
 
     # validation that Pxx normalization is correct
     # --- 3. Manual single-segment periodogram, for cross-validation of normalization ---
@@ -284,19 +245,19 @@ def main():
 
     # plot 
 
-    # # # DELTA # # # 
-    # # separate plot for delta
+
+    # separate plot for delta
     mod=8e3
     detune=10e3
     mod_target=mod+detune # for sampling later
 
-    # fig, ax = plt.subplots(figsize=(9, 6))  
-    # ax.set_prop_cycle(color=colors)
+    fig, ax = plt.subplots(figsize=(9, 6))  
+    ax.set_prop_cycle(color=colors)
 
-    # # delta_42 = psd_42 - psd_dark
-    # # delta_85 = psd_85 - psd_dark
-    # # delta_190 = psd_190 - psd_dark
-    # # delta_280 = psd_280 - psd_dark
+    # delta_42 = psd_42 - psd_dark
+    # delta_85 = psd_85 - psd_dark
+    # delta_190 = psd_190 - psd_dark
+    # delta_280 = psd_280 - psd_dark
 
     deltas = []
     for trace in traces:
@@ -304,7 +265,7 @@ def main():
         label+=" Delta"
         delta = psd-psd_dark
         deltas.append(delta)
-        # ax.plot(freq, delta, label=label, linewidth=1.2)
+        ax.plot(freq, delta, label=label, linewidth=1.2)
 
     # interp to welch freq arr density
     cs = CubicSpline(freq, psd_dark)
@@ -314,26 +275,33 @@ def main():
     delta_exp = Pxx_welch - psd_dark_interp # smooth for ds, single-shot for plot  
     # delta_exp = Pxx_smooth - psd_dark_interp # smooth for ds, single-shot for plot
     deltas.append(delta_exp)
+    ax.plot(f_welch, delta_exp, label="Experimental (Delta)", linewidth=1.2)
 
-    # ax.plot(f_welch, delta_exp, label="Experimental (Delta)", linewidth=1.2)
+
+
+
+    # # can't plot, 6 OOM higher than fit... why?
+    # delta_1000_exp = Pxx_welch - psd_dark_interp
+
+    # ax.plot([],[]) # for cmap consistency
     # ax.plot(freq, delta_42, label="delta_42", linewidth=1.2)
     # ax.plot(freq, delta_85, label="delta_85", linewidth=1.2)
     # ax.plot(freq, delta_190, label="delta_190", linewidth=1.2)
     # ax.plot(freq, delta_280, label="delta_280", linewidth=1.2)
-    # ax.axvline(mod_target,linestyle='--',label="Sampling Frequency",color='r')
+    ax.axvline(mod_target,linestyle='--',label="Sampling Frequency",color='r')
     # ax.plot(f_welch,delta_1000_exp,label="delta_1000_exp",linewidth=1.2)
 
 
-    # # styling for delta
-    # TITLE = "PSD Relative to Dark Trace"
-    # ax.set_ylim([0 , 3.5e-9])
-    # ax.set_xlim([500,50e3]) # cut off flicker noise
-    # ax.set_xlabel("Frequency [Hz]")
-    # ax.set_ylabel(r"\Delta PSD S\(f,I\)-S\(f,\) (V^2/Hz)")
-    # ax.set_title(TITLE)
-    # ax.grid(True, which="both", alpha=0.3)
-    # ax.legend(loc="best", fontsize=8, frameon=True)
-    # fig.tight_layout()
+    # styling for delta
+    TITLE = "PSD Relative to Dark Trace"
+    ax.set_ylim([0 , 3.5e-9])
+    ax.set_xlim([500,50e3]) # cut off flicker noise
+    ax.set_xlabel("Frequency [Hz]")
+    ax.set_ylabel(r"\Delta PSD S\(f,I\)-S\(f,\) (V^2/Hz)")
+    ax.set_title(TITLE)
+    ax.grid(True, which="both", alpha=0.3)
+    ax.legend(loc="best", fontsize=8, frameon=True)
+    fig.tight_layout()
 
     # plt.show()
     # return
@@ -341,6 +309,8 @@ def main():
 
     # sample deltas at mod frequency
     mod_index = np.abs(freq-mod_target).argmin()
+    # powers = [42,85,190,280,1000]
+    # sampled_PSD = [delta_42[mod_index], delta_85[mod_index],delta_190[mod_index],delta_280[mod_index],delta_1000_exp[mod_index]] # linear
     sampled_PSD = [x[mod_index] for x in deltas]
 
     # linear fit
@@ -351,9 +321,9 @@ def main():
     # use calibration AND experimental power
     popt, pcov = curve_fit(quadratic_model, powers ,sampled_PSD)
     p_smooth = np.linspace(0,1e3,100)
-    linear_fit = np.multiply(reg_calib.slope,p_smooth) + reg_calib.intercept
 
-    # # sample linear fit at 
+
+
 
 
     # model derivation
@@ -363,7 +333,7 @@ def main():
     fig, ax = plt.subplots(figsize=(9, 6))  
     ax.scatter(powers[0:-1],sampled_PSD[0:-1],label="Calibration")
     ax.scatter(powers[-1],sampled_PSD[-1],label="Experimental")
-    ax.plot(p_smooth,linear_fit, linestyle='--',color='r',label='Linear Fit (All); R^2='+str(round(reg_calib.rvalue**2,3)))
+    ax.plot(powers, np.multiply(reg_calib.slope,powers) + reg_calib.intercept,linestyle='--',color='r',label='Linear Fit (Calibration only); R^2='+str(round(reg_calib.rvalue**2,3)))
 
     # plot quad fit
     # ax.plot(p_smooth, quadratic_model(p_smooth, *popt), color='b', label='Quadratic Fit')
@@ -376,9 +346,6 @@ def main():
     ax.set_xlabel("Optical Power [nW]")
     ax.set_ylabel(r"\Delta PSD S(f,I)-S(f,0) (V^2/Hz)")
     ax.set_title(TITLE)
-    ax.set_xlim([0,680])
-    ax.set_ylim([0,6.5e-10])
-
     ax.grid(True, which="both", alpha=0.3)
     ax.legend(loc="best", fontsize=8, frameon=True)
     fig.tight_layout()
