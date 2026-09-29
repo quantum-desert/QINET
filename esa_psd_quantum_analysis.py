@@ -23,7 +23,9 @@ import matplotlib.colors as mcolors
 
 import regex as re 
 from scipy import stats, signal
-from scipy.interpolate import CubicSpline, make_interp_spline
+from scipy.fft import rfft, fft, fftfreq  # scipy.fft is preferred over np.fft for speed
+
+from scipy.interpolate import interp1d
 from scipy.optimize import curve_fit
 
 
@@ -70,6 +72,10 @@ def unpack_trace(fp):
 def quadratic_model(x, a, b, c):
     return a * x**2 + b * x + c
 
+def noise_floor_model_log(f,a,b,c):
+    # fit in log space
+    return a*1/f+b*f**2+c
+
 
 
 
@@ -85,7 +91,8 @@ def main():
     dark_trace = rootp+r"BASELINE/PSD_SRS760_TIA_PD_RB_0nw_0.txt"
 
     # define traces
-    dark_trace = rootp+r"PSD_SRS760_s1_dark_20avg_0.txt"
+    # dark_trace = rootp+r"PSD_SRS760_s1_dark_20avg_0.txt"
+    dark_trace = rootp+r"PSD_SRS760_s1_dark_2000avg_0.txt"
     s1_noise_only_trace = rootp+r"PSD_SRS760_s1_noise_only_ph54nw_20avg_0.txt"
     s1_sig_only_trace = rootp+r"PSD_SRS760_s1_sig_only_ph54nw_20avg_0.txt"
     s1_both_trace = rootp+r"PSD_SRS760_s1_both_ph54nw_20avg_0.txt"
@@ -128,18 +135,123 @@ def main():
     # extract noise power @ homodyne
     Ph = int(re.search(r"ph(.*?)nw", label).group(1)) # nW
 
-
-    # # Estimate SNR
-    # TODO, what is T?
-    T=1 # integration time, derived from matched filter assumption @ classical receiver
-
-    # Naive method: ratio of peak to Gamma (noise floor) in adjacent region
+    # define matched filter
     # TODO
 
-    # Smart method: integrate
+
+
+
+    # # Estimate SNR hierarchy
+
+    # TODO add real, measured numbers
+    e = 1.602176634e-19
+    c = 3e8
+    h=6.626e-34
+    lambda_pc = 1530e-9
+    S=1.23 # ideal responsivity of PD 
+    Z_TIA=5e7 # TIA gain (V/A)
+    Ps=100e-12 # Watts (measured @ SPDC src crystal)
+    Pb=535e-6 # watts, pre-PCR
+    hnu = 1.25e-19
+    W=1.88e12 # optical BW (Hz)
+    Rb=16e3 # Bit rate (Hz)
+    NS=Ps/(hnu*W) # TODO derive
+    NB=Pb/(hnu*W)
+    kappa=2e-2
+    T = 1/Rb # bit window duration
+    M=W*T
+    SNR_C = 2*kappa*NS*M/NB
+    SNR_Q = 2*SNR_C
+
+    # SNR: ceiling based on ideal pulse shape, ideal filtering, real noise
+    # NOTE: pulse amplitude based on REAL photon-to-voltage conversion
+    # generate ideal pulse spectrum
+    Fs = 250e3 # sample rate (SPS)
+    duration = 1/Rb # seconds
+    photon_flux = M*np.sqrt(2*kappa*NS) # photon / sec
+    optical_power = photon_flux * h*c/(lambda_pc) # watts
+    s0 = optical_power*S*Z_TIA*Rb # Watts * (amp / Watt) * (V / A) = volts
+
+    # s0_alt = (e*Z_TIA/T) * M*np.sqrt(2*kappa*NS)   # classical case
+    # print(s0_alt)
+    # return
+    N_pulse = int(Fs * duration)  # Total number of samples 
+    N_pad = 200*N_pulse
+
+    s_t_padded = np.zeros(N_pad)
+    s_t_padded[:N_pulse] = s0        # the pulse itself, unchanged -- zeros elsewhere are just resolution padding
+    freq_dense = np.fft.rfftfreq(N_pad, d=1/Fs)
+
+    # ideal pulse: frequency domain
+    f_max = 50e3 
+    s_f = (2/Fs)*rfft(s_t_padded) # FFT of ideal pulse shape, one-sided convention (factor of 2)
+    mask = freq_dense <= f_max
+
+    # limit to ESA max freq
+    freq_dense = freq_dense[mask]
+    s_f = s_f[mask]
+
+
+    # interpolate sampled up to ideal
+    f_cubic = interp1d(freq, psd_noise_only, kind='cubic')
+    psd_noise_only_interp = f_cubic(freq_dense)
+
+
+    # TODO debug
+    # SNR_ceil = (2/Rb)*np.trapezoid(np.divide(np.power(np.abs(s_f),2),psd_noise_only_interp),freq_dense) # \int (S_both(f) - S_noise(f)) / S_noise(f) df (V^2)
+
+    # calculate SNR with real pulse shape
+    SNR_ceil_pulse = (2/Rb)*np.trapezoid(np.divide(psd_both-psd_noise_only,psd_noise_only),freq) # \int (S_both(f) - S_noise(f)) / S_noise(f) df (V^2)
+
+    # calculate Deltas
+    # Delta_A
     # TODO
-    SNR_exp = T*np.trapz(np.divide(psd_both,psd_noise_only),freq) # \int S_both(f) / S_noise(f) df
-    SNR_theory = 0# TODO build up model
+
+    # SNR report
+    print(f"SNRT_T,C: {SNR_C:.4f}")
+    # print(f"SNRT_ceil: {SNR_ceil:.4f}") # TODO debug
+    print(f"SNRT_ceil,pulse: {SNR_ceil_pulse:.4f}")
+    print(f"SNRT_T,Q: {SNR_Q:.4f}")
+
+
+    # print(f"NS: {NS:.4f}")
+    # print(f"NB: {NB:.4f}")
+    # print(f"freq min: {np.min(freq):.4f}")
+    # print(f"freq max: {np.max(freq):.4f}")
+    # print(f"df:{(freq[1]-freq[0]):.4f}")
+
+
+    ## NOISE FLOOR FIT
+    # TODO need to takr averaged + interpolated dark trace
+    guess = [1,1,1]
+    popt, pcov = curve_fit(noise_floor_model_log,freq,10*np.log10(psd_dark),p0=guess)
+
+    optimized_a, optimized_b, optimized_c = popt
+    print(f"Optimized Parameters:\na = {optimized_a:.4f}\nb = {optimized_b:.4f}\nc = {optimized_c:.4f}")
+    perr = np.sqrt(np.diag(pcov))
+    print(f"Parameter Errors: {perr}")
+
+    guess_a = -0.075
+    guess_b = 0.0000001
+    guess_c = -86.5
+
+    guess_fit = guess_a*freq+guess_c+guess_b*freq**2
+
+
+
+    # Plot
+    # create figure
+    fig, ax = plt.subplots(figsize=(9, 6))
+    ax.set_prop_cycle(color=data_colors)
+    ax.plot(freq,10*np.log10(psd_dark),label="SR760 Dark Trace")
+    # ax.plot(freq,guess_fit,label="fit")
+    ax.set_ylim([-106,-99])
+    ax.set_xlim([0,50e3])
+    plt.show()
+    print(frw)
+    print(10*np.log10(psd_dark))
+
+    return
 
     # mod frequency call out + downsample
     fmod = 8e3
