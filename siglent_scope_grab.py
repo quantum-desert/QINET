@@ -44,7 +44,7 @@ TIMEOUT_S = 30.0            # network timeout while downloading
 
 # Output location.  None = folder containing this script (falls back to the
 # current working directory if the editor doesn't define __file__).
-OUT_DIR = "/Users/agentatom/Library/CloudStorage/OneDrive-Umich/GraduateSchool/UM/QE_LAB/QINET/data/9-29-Phase/phiLO=+33/"
+OUT_DIR = "/Users/agentatom/Library/CloudStorage/OneDrive-Umich/GraduateSchool/UM/QE_LAB/QINET/data/calibration data/V_PM_mapping_10-1/philo=90/"
 OUT_BASENAME = "run01"      # files: run01.csv, run01.npz, ...
 
 # --- probe / dump ------------------------------------------------------------
@@ -53,7 +53,7 @@ STRIDE = 1                  # dump: keep every Nth sample (shrinks huge records)
 
 # --- dump: one file per channel, named like the scope's own CSV export --------
 PER_CHANNEL_FILES = True    # False = one combined CSV named OUT_BASENAME.csv
-V_DC = 4                  # DC voltage (V) applied at the PM for this dump; goes in
+V_DC = 3.0                  # DC voltage (V) applied at the PM for this dump; goes in
                             # every file name (same for all channels).  A number is
                             # written like 1.5 -> "DC1.5V"; a string is used verbatim.
 # {vdc} = V_DC text, {ch} = channel number, {idx} = repeat number at this V_DC
